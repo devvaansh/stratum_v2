@@ -1,0 +1,257 @@
+```
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    STRATUM V2 JOB DECLARATOR CLIENT                       ║
+║                         Production Architecture                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              MAIN PROCESS                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐    │
+│  │  main.rs - Tokio Multi-threaded Runtime                           │    │
+│  │  • Loads config.toml                                               │    │
+│  │  • Initializes tracing (structured logging)                        │    │
+│  │  • Creates broadcast channel                                       │    │
+│  │  • Spawns actors                                                   │    │
+│  │  • Handles graceful shutdown                                       │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                  ┌─────────────────┼─────────────────┐
+                  ▼                 ▼                 ▼
+         
+┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
+│   NODE ACTOR         │  │   POOL ACTOR         │  │   UI ACTOR           │
+│   (Bitcoin RPC)      │  │   (SV2 Protocol)     │  │   (Terminal)         │
+├──────────────────────┤  ├──────────────────────┤  ├──────────────────────┤
+│ State:               │  │ State Machine:       │  │ State:               │
+│ • RPC Client         │  │ • Disconnected       │  │ • AppStats           │
+│ • Last height        │  │ • Connected          │  │ • Event logs         │
+│ • Template counter   │  │ • InitiatorSent      │  │ • Start time         │
+│                      │  │ • Complete           │  │                      │
+│ Responsibilities:    │  │                      │  │ Responsibilities:    │
+│ • Poll templates     │  │ Responsibilities:    │  │ • Render dashboard   │
+│ • Extract txs        │  │ • TCP connect        │  │ • Display stats      │
+│ • Calculate fees     │  │ • Noise handshake    │  │ • Show logs          │
+│ • Broadcast events   │  │ • Encrypt/decrypt    │  │ • Handle input       │
+│                      │  │ • Send SV2 msgs      │  │ • Update metrics     │
+└──────────────────────┘  └──────────────────────┘  └──────────────────────┘
+         │                         │                         │
+         │                         │                         │
+         └─────────────┬───────────┴─────────────┬───────────┘
+                       ▼                         ▼
+              ┌─────────────────────────────────────────┐
+              │  BROADCAST CHANNEL (AppMessage)         │
+              │  • broadcast::Sender<AppMessage>        │
+              │  • Multiple subscribers (fanout)        │
+              │  • 100 message buffer                   │
+              └─────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════════════════
+                              MESSAGE FLOW EXAMPLES
+═════════════════════════════════════════════════════════════════════════════
+
+Example 1: New Block Template
+──────────────────────────────
+Bitcoin Core  →  Node Actor  →  Broadcast  →  UI Actor
+                                           ↘  Pool Actor
+                                           
+Message: AppMessage::NewBlockTemplate {
+    height: 850123,
+    tx_count: 2500,
+    total_fees: 125000
+}
+
+Example 2: Job Declaration
+───────────────────────────
+Node Actor  →  Broadcast  →  Pool Actor  →  SV2 Network
+                         ↘  UI Actor (log)
+                         
+Message: AppMessage::SendJobDeclaration {
+    template_id: 42,
+    coinbase_outputs: [...],
+    transactions: [...]
+}
+
+Example 3: Job Accepted
+────────────────────────
+SV2 Network  →  Pool Actor  →  Broadcast  →  UI Actor
+                                           ↘  (metrics update)
+                                           
+Message: AppMessage::JobAccepted {
+    template_id: 42,
+    new_mining_job_token: [0x12, 0x34, ...]
+}
+
+═════════════════════════════════════════════════════════════════════════════
+                        NOISE NX HANDSHAKE DETAIL
+═════════════════════════════════════════════════════════════════════════════
+
+Pool Actor State Transitions:
+─────────────────────────────
+
+   ┌──────────────┐
+   │ Disconnected │  Initial state
+   └──────┬───────┘
+          │ TCP connect(pool_address)
+          ▼
+   ┌──────────────┐
+   │  Connected   │  TCP stream established
+   └──────┬───────┘
+          │ initiator.step_0() → first_message
+          │ stream.write_all(first_message)
+          ▼
+   ┌──────────────┐
+   │InitiatorSent │  Waiting for pool response
+   └──────┬───────┘
+          │ stream.read(second_message)
+          │ initiator.step_1(second_message) → codec
+          ▼
+   ┌──────────────┐
+   │   Complete   │  Encrypted channel ready
+   └──────────────┘
+
+Cryptographic Operations:
+──────────────────────────
+
+Step 0 (Initiator):
+  • Generate ephemeral keypair (e)
+  • MixHash(e.pub)
+  • Send: [32 bytes: e.pub]
+
+Step 1 (Process response):
+  • Receive: [32 bytes: re.pub][48 bytes: encrypted rs + tag]
+  • MixHash(re.pub)
+  • DH(e.priv, re.pub) → shared_ee
+  • MixKey(shared_ee)
+  • DecryptAndHash(encrypted_rs) → rs
+  • DH(e.priv, rs.pub) → shared_es
+  • MixKey(shared_es)
+  • Split() → (cipher_send, cipher_recv)
+
+Result:
+  • NoiseCodec with ChaCha20-Poly1305
+  • All subsequent messages encrypted
+  • Forward secrecy via ephemeral keys
+  • Pool authenticated via static key
+
+═════════════════════════════════════════════════════════════════════════════
+                          ERROR HANDLING STRATEGY
+═════════════════════════════════════════════════════════════════════════════
+
+JdcError Variants:
+──────────────────
+┌─────────────────────────────────────────────────────────────┐
+│ BitcoinRpc         → RPC connection/API errors              │
+│ PoolConnection     → Network errors, timeouts               │
+│ NoiseHandshake     → Crypto failures, MITM detection        │
+│ Framing            → Encryption/decryption errors           │
+│ Codec              → Message parsing errors                 │
+│ Io                 → File/socket I/O errors                 │
+│ Config             → Invalid configuration                  │
+│ ChannelSend/Recv   → Actor communication errors            │
+│ InvalidState       → Illegal state transitions              │
+│ TemplateBuilding   → Job construction errors               │
+│ Serialization      → Data encoding errors                  │
+│ Shutdown           → Graceful termination                  │
+└─────────────────────────────────────────────────────────────┘
+
+Every function returns Result<T, JdcError>
+No .unwrap() or .expect() in production code
+Errors propagated with ? operator
+UI displays errors in event log
+
+═════════════════════════════════════════════════════════════════════════════
+                              DATA STRUCTURES
+═════════════════════════════════════════════════════════════════════════════
+
+AppMessage (Sum Type):
+──────────────────────
+enum AppMessage {
+    // Node events
+    NodeConnected,
+    NodeDisconnected,
+    NewBlockTemplate { height, tx_count, total_fees },
+    TemplateError(String),
+    
+    // Pool events
+    PoolConnecting,
+    PoolConnected,
+    PoolDisconnected,
+    HandshakeInProgress,
+    HandshakeComplete,
+    HandshakeError(String),
+    JobDeclarationSent { template_id, tx_count },
+    JobAccepted { template_id, new_mining_job_token },
+    JobRejected { template_id, reason },
+    
+    // Internal routing
+    SendJobDeclaration { template_id, coinbase_outputs, transactions },
+    
+    // Control
+    Shutdown,
+    Error(String),
+}
+
+AppStats (Product Type):
+────────────────────────
+struct AppStats {
+    node_connected: bool,
+    pool_connected: bool,
+    handshake_complete: bool,
+    current_height: u64,
+    templates_created: u64,
+    jobs_declared: u64,
+    jobs_accepted: u64,
+    jobs_rejected: u64,
+    total_fees_collected: u64,
+    uptime_seconds: u64,
+}
+
+═════════════════════════════════════════════════════════════════════════════
+                            PERFORMANCE NOTES
+═════════════════════════════════════════════════════════════════════════════
+
+• Zero-copy where possible (bytes::BytesMut)
+• Async I/O throughout (no blocking calls)
+• Actor isolation prevents lock contention
+• Broadcast channel for efficient fanout
+• Minimal allocations in hot paths
+• Compiler optimizations (--release):
+  - LTO enabled
+  - Single codegen unit
+  - opt-level = 3
+
+═════════════════════════════════════════════════════════════════════════════
+                              DEPENDENCIES
+═════════════════════════════════════════════════════════════════════════════
+
+Production Dependencies:
+────────────────────────
+tokio                   Async runtime
+noise_sv2               Noise Protocol implementation
+framing_sv2             SV2 frame encoding
+codec_sv2               Message serialization
+bitcoincore-rpc         Bitcoin Core RPC client
+ratatui                 Terminal UI framework
+crossterm               Terminal control
+thiserror               Error derive macros
+tracing                 Structured logging
+config                  Configuration management
+serde                   Data serialization
+bytes                   Buffer management
+
+═════════════════════════════════════════════════════════════════════════════
+                           SECURITY PROPERTIES
+═════════════════════════════════════════════════════════════════════════════
+
+✓ No shared mutable state (data race free)
+✓ Memory safe (Rust ownership)
+✓ No panics (explicit error handling)
+✓ Forward secrecy (ephemeral DH keys)
+✓ AEAD encryption (ChaCha20-Poly1305)
+✓ Pool authentication (static key verification)
+✓ MITM resistant (Noise Protocol)
+✓ No unwrap bombs (zero unwrap policy)
+
+═════════════════════════════════════════════════════════════════════════════
+```
