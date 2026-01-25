@@ -1,0 +1,32 @@
+# Stratum V2 Job Declarator Client Configuration
+
+[bitcoin_node]
+# Bitcoin Core RPC configuration
+rpc_url = "http://127.0.0.1:8332"
+rpc_user = "bitcoin"
+rpc_password = "password"
+# Poll interval for new block templates (seconds)
+poll_interval = 5
+
+[pool]
+# Pool connection details
+address = "127.0.0.1:34254"
+# Authority public key (if using certified noise handshake)
+# authority_pubkey = ""
+# Pool's static public key for Noise handshake (if known)
+# pool_static_pubkey = ""
+
+[jdc]
+# Coinbase outputs for custom transaction selection
+# These are the outputs that will receive block rewards
+coinbase_outputs = [
+    { value = 0, script_pubkey = "76a914..88ac" }  # P2PKH example
+]
+# Minimum fee rate (sat/vB) for transaction selection
+min_fee_rate = 1.0
+# Maximum template size (bytes)
+max_template_size = 4000000
+
+[logging]
+level = "info"
+# Options: trace, debug, info, warn, error
