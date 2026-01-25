@@ -1,0 +1,57 @@
+[package]
+name = "stratum-v2-jdc"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# Stratum V2 Reference Implementation crates
+# Using compatible versions from the same release
+noise_sv2 = "1.1"
+
+# Bitcoin Core RPC
+bitcoincore-rpc = "0.18"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Terminal UI
+ratatui = "0.25"
+crossterm = "0.27"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Configuration
+config = "0.13"
+toml = "0.8"
+
+# Utils
+bytes = "1.5"
+futures = "0.3"
+async-channel = "2.1"
+chrono = "0.4"
+
+# Cryptographic utilities for SV2
+sha2 = "0.10"
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
