@@ -3,10 +3,10 @@ mod node;
 mod pool;
 mod ui;
 
-use common::{AppMessage, CoinbaseOutput, JdcError, Result};
-use node::{NodeActor, NodeConfig};
-use pool::{PoolActor, PoolConfig};
-use ui::UiActor;
+use common::{Event, CoinbaseOut, Sv2Error, Result};
+use node::{BitcoinNode, BitcoinRpcConfig};
+use pool::{PoolClient, PoolConnConfig};
+use ui::Dashboard;
 
 use config::Config;
 use serde::Deserialize;
@@ -17,8 +17,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 /// Application configuration
 #[derive(Debug, Deserialize)]
 struct AppConfig {
-    bitcoin_node: NodeConfig,
-    pool: PoolConfig,
+    bitcoin_node: BitcoinRpcConfig,
+    pool: PoolConnConfig,
     jdc: JdcConfig,
     logging: LoggingConfig,
 }
@@ -57,10 +57,10 @@ async fn main() -> Result<()> {
 
     // Create message passing channels
     // Using broadcast channel for fanout pattern (one-to-many)
-    let (tx, _) = broadcast::channel::<AppMessage>(100);
+    let (tx, _) = broadcast::channel::<Event>(100);
 
     // Spawn Node Actor
-    let node_actor = NodeActor::new(
+    let node_actor = BitcoinNode::new(
         config.bitcoin_node.clone(),
         tx.clone(),
         coinbase_outputs.clone(),
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
     });
 
     // Spawn Pool Actor
-    let pool_actor = PoolActor::new(
+    let pool_actor = PoolClient::new(
         config.pool.clone(),
         tx.clone(),
         tx.subscribe(),
@@ -84,12 +84,12 @@ async fn main() -> Result<()> {
     });
 
     // Spawn UI Actor (runs in main thread for terminal control)
-    let ui_actor = UiActor::new(tx.subscribe());
+    let ui_actor = Dashboard::new(tx.subscribe());
     let ui_result = ui_actor.run().await;
 
     // When UI exits (user presses 'q'), shutdown other actors
     info!("Shutting down...");
-    let _ = tx.send(AppMessage::Shutdown);
+    let _ = tx.send(Event::Shutdown);
 
     // Wait for actors to finish with timeout
     let shutdown_timeout = tokio::time::Duration::from_secs(5);
@@ -120,7 +120,7 @@ fn load_config() -> Result<AppConfig> {
 /// Initialize tracing/logging
 fn init_logging(config: &LoggingConfig) -> Result<()> {
     let log_level = config.level.parse::<tracing::Level>()
-        .map_err(|e| JdcError::Config(
+        .map_err(|e| Sv2Error::Config(
             config::ConfigError::Message(format!("Invalid log level: {}", e))
         ))?;
 
@@ -140,16 +140,16 @@ fn init_logging(config: &LoggingConfig) -> Result<()> {
 /// Parse coinbase outputs from configuration
 fn parse_coinbase_outputs(
     configs: &[CoinbaseOutputConfig],
-) -> Result<Vec<CoinbaseOutput>> {
+) -> Result<Vec<CoinbaseOut>> {
     configs
         .iter()
         .map(|c| {
             let script_pubkey = hex::decode(&c.script_pubkey)
-                .map_err(|e| JdcError::Config(
+                .map_err(|e| Sv2Error::Config(
                     config::ConfigError::Message(format!("Invalid script_pubkey hex: {}", e))
                 ))?;
             
-            Ok(CoinbaseOutput {
+            Ok(CoinbaseOut {
                 value: c.value,
                 script_pubkey,
             })
